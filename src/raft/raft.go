@@ -17,11 +17,15 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
-
-// import "bytes"
-// import "encoding/gob"
+import (
+	"sync"
+	"labrpc"
+	"bytes"
+	"encoding/gob"
+)
+//import "labrpc"
+//import "bytes"
+//import "encoding/gob"
 
 
 
@@ -37,6 +41,18 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
+// Server Role
+const(
+	Leader = iota //0
+	Follower
+	Candidate
+)
+
+type LogEntry struct {
+	term	int
+	cmd		string
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -49,7 +65,17 @@ type Raft struct {
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	role		int
+	// Persistent state on all servers
+	currentTerm	int
+	voteFor		int
+	log			[]LogEntry
+	// Volatile state on all servers
+	commitIndex	int
+	lastApplied	int
+	// Volatile state on leaders
+	nextIndex	[]int
+	matchIndex	[]int
 }
 
 // return currentTerm and whether this server
@@ -59,6 +85,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here.
+	term = rf.currentTerm
+	isleader = rf.role == Leader
 	return term, isleader
 }
 
@@ -76,6 +104,13 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.voteFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -88,6 +123,11 @@ func (rf *Raft) readPersist(data []byte) {
 	// d := gob.NewDecoder(r)
 	// d.Decode(&rf.xxx)
 	// d.Decode(&rf.yyy)
+	 r := bytes.NewBuffer(data)
+	 d := gob.NewDecoder(r)
+	 d.Decode(&rf.currentTerm)
+	 d.Decode(&rf.voteFor)
+	 d.Decode(&rf.log)
 }
 
 
@@ -98,6 +138,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here.
+	term			int
+	candidateId		int
+	lastLogIndex	int
+	lastLogTerm 	int
 }
 
 //
@@ -105,6 +149,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here.
+	term		int
+	voteGranted	bool
 }
 
 //
@@ -112,6 +158,19 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
+	reply.term = rf.currentTerm
+	if args.term < rf.currentTerm {
+		reply.voteGranted = false
+	}
+	reply.voteGranted = (rf.voteFor == -1 || rf.voteFor == args.candidateId) && rf.isUp2Date(args)
+}
+
+func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
+	if rf.log[rf.lastApplied].term != args.lastLogTerm {
+		return rf.log[rf.lastApplied].term < args.lastLogTerm
+	} else {
+		return rf.lastApplied < args.lastLogIndex
+	}
 }
 
 //
@@ -188,6 +247,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here.
+	rf.role = Follower
+	rf.currentTerm = 0
+	rf.voteFor = -1
+	rf.log = make([]LogEntry, /*len=*/1, /*cap=*/100)
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = nil
+	rf.matchIndex = nil
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

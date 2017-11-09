@@ -90,6 +90,15 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 	qe.Encode(args)
 	req.args = qb.Bytes()
 
+	// bug when encoding array
+	//fmt.Println("xxx",args)
+	//xargs := reflect.New(req.argsType)
+	//// decode the argument.
+	//ab := bytes.NewBuffer(req.args)
+	//ad := gob.NewDecoder(ab)
+	//ad.Decode(xargs.Interface())
+	//fmt.Println("yyy",xargs.Elem())
+
 	e.ch <- req
 
 	rep := <-req.replyCh
@@ -356,7 +365,6 @@ func (rs *Server) dispatch(req reqMsg) replyMsg {
 	dot := strings.LastIndex(req.svcMeth, ".")
 	serviceName := req.svcMeth[:dot]
 	methodName := req.svcMeth[dot+1:]
-
 	service, ok := rs.services[serviceName]
 
 	rs.mu.Unlock()
@@ -425,7 +433,6 @@ func (svc *Service) dispatch(methname string, req reqMsg) replyMsg {
 		// prepare space into which to read the argument.
 		// the Value's type will be a pointer to req.argsType.
 		args := reflect.New(req.argsType)
-
 		// decode the argument.
 		ab := bytes.NewBuffer(req.args)
 		ad := gob.NewDecoder(ab)

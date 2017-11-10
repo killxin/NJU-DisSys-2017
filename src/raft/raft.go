@@ -278,7 +278,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	go rf.passiveLoop()
+	go rf.followerLoop()
 	return rf
 }
 
@@ -286,43 +286,69 @@ func RandElectionTimeout() int {
 	return rand.Intn(450) + 10
 }
 
-func (rf *Raft) passiveLoop(){
+func (rf *Raft) followerLoop(){
+	rf.state = Follower
 	// random election timeout [10,500]ms
-	for rf.state != Leader {
+	for {
 		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
  		select {
 		case <-timer.C:
+			if rf.state != Follower {
+				break
+			}
 			if !rf.heartBeat {
-				rf.currentTerm++
-				rf.state = Candidate
-				ch := make(chan *RequestVoteReply)
-				for i := 0; i < len(rf.peers); i++ {
-					if i != rf.me {
-						go rf.SendRequestVote(i, ch)
-					}
-				}
-				votes := 1 // vote for itself
-				for i := 0; i < len(rf.peers)-1; i++ {
-					reply := <-ch
-					fmt.Println(rf.me,"reply",reply)
-					if reply != nil && reply.VoteGranted {
-						votes++
-					}
-				}
-				fmt.Println(rf.me,"votes",votes)
-				if votes >= len(rf.peers)/2 + 1 {
-					rf.state = Leader
-					fmt.Println("Term",rf.currentTerm,"Leader Change ",rf.me)
-				}
+				go rf.candidateLoop()
+				break
 			}
 			rf.heartBeat = false
 		}
 	}
-	go rf.activeLoop()
 }
 
-func (rf *Raft) activeLoop(){
-	for rf.state == Leader {
+func (rf *Raft) candidateLoop(){
+	rf.state = Candidate
+	rf.currentTerm++
+	for {
+		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
+		ch := make(chan *RequestVoteReply)
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				go rf.SendRequestVote(i, ch)
+			}
+		}
+		votes := 1 // vote for itself
+		for i := 0; i < len(rf.peers)-1; i++ {
+			reply := <-ch
+			fmt.Println(rf.me, "reply", reply)
+			if reply != nil {
+				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+					go rf.followerLoop()
+					break
+				}
+				if reply.VoteGranted {
+					votes++
+				}
+			}
+		}
+		fmt.Println(rf.me, "votes", votes)
+		if votes >= len(rf.peers)/2+1 {
+			fmt.Println("Term", rf.currentTerm, "Leader Change ", rf.me)
+			go rf.leaderLoop()
+			break
+		}
+		select {
+		case <-timer.C:
+			if rf.state != Candidate {
+				break
+			}
+		}
+	}
+}
+
+func (rf *Raft) leaderLoop(){
+	rf.state = Leader
+	for {
 		ch := make(chan *AppendEntriesReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {

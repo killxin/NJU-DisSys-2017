@@ -169,17 +169,17 @@ func (rf *Raft) MakeRequestVoteArgs() RequestVoteArgs{
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-	} else if args.Term > rf.currentTerm {
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.voteFor = -1
-	}
-	reply.VoteGranted = rf.voteFor == -1 || rf.voteFor == args.CandidateId // && rf.isUp2Date(args)
-	if reply.VoteGranted && rf.voteFor == -1 {
+		rf.state = Follower
+	} else if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+	} else if rf.voteFor == -1 || rf.voteFor == args.CandidateId {
+		// rf.isUp2Date(args)
+		reply.VoteGranted = true
 		rf.voteFor = args.CandidateId
 	}
+	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
@@ -398,10 +398,10 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	//fmt.Println("yyy",args.Term)
 	// just deal with heart beat
-	if args.Term < rf.currentTerm || rf.state == Leader {
+	if args.Term < rf.currentTerm {
 		return
 	}
-	if rf.state == Candidate {
+	if rf.state == Candidate || rf.state == Leader {
 		rf.state = Follower
 	}
 	rf.heartBeat = true

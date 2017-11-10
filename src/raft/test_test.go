@@ -58,14 +58,17 @@ func TestReElection(t *testing.T) {
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 	fmt.Println("zzz")
+	fmt.Println("leader2",leader2)
 	// if there's no quorum, no leader should
 	// be elected.
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
+	fmt.Println(leader2)
+	fmt.Println((leader2 + 1) % servers)
+	leader3 := cfg.checkOneLeader()
+	fmt.Println("leader3",leader3)
 	cfg.checkNoLeader()
-	//fmt.Println(leader2)
-	//fmt.Println((leader2 + 1) % servers)
 	fmt.Println("kkk")
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)

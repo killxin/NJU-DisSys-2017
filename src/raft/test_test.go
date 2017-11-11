@@ -89,7 +89,6 @@ func TestReconFollowerElection(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkOneLeader()
 
-	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkOneLeader()

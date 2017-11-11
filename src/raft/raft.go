@@ -205,14 +205,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func RandElectionTimeout() int {
-	return rand.Intn(150) + 150
+	// RaftElectionTimeout = 1000ms
+	return rand.Intn(500) + 500
 }
 
 func (rf *Raft) followerLoop(){
+	fmt.Println(rf.me,"becomes follower")
 	rf.state = Follower
-	rf.heartBeat = true
+	rf.heartBeat = false
 	// random election timeout [10,500]ms
-	for {
+	for rf.state == Follower {
 		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
  		<-timer.C
 		if rf.state != Follower {
@@ -227,13 +229,14 @@ func (rf *Raft) followerLoop(){
 }
 
 func (rf *Raft) candidateLoop(){
+	fmt.Println(rf.me,"becomes candidate")
 	rf.state = Candidate
-	for {
+	for rf.state == Candidate {
 		rf.currentTerm++
 		// vote for itself
 		rf.voteFor = rf.me
 		votes := 1
-		fmt.Println("server",rf.me,"start election term",rf.currentTerm)
+		fmt.Println(rf.me,"start election term",rf.currentTerm)
 		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
 		ch := make(chan *RequestVoteReply)
 		for i := 0; i < len(rf.peers); i++ {
@@ -257,7 +260,6 @@ func (rf *Raft) candidateLoop(){
 			}
 		}
 		if votes >= len(rf.peers)/2+1 {
-			fmt.Println("Term", rf.currentTerm, "Leader Change ", rf.me)
 			go rf.leaderLoop()
 			return
 		}
@@ -269,8 +271,9 @@ func (rf *Raft) candidateLoop(){
 }
 
 func (rf *Raft) leaderLoop(){
+	fmt.Println(rf.me,"becomes leader")
 	rf.state = Leader
-	for {
+	for rf.state == Leader{
 		ch := make(chan *AppendEntriesReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
@@ -325,10 +328,14 @@ func (rf *Raft) MakeRequestVoteArgs() RequestVoteArgs{
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
+	//fmt.Println(rf.me,"receive request vote",args)
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.voteFor = -1
-		go rf.followerLoop()
+		if rf.state != Follower {
+			fmt.Println(rf.me,"get reqvot",args)
+			go rf.followerLoop()
+		}
 	}
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -411,13 +418,18 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	// just deal with heart beat
+	//fmt.Println(rf.me,"receive append entries",args)
 	rf.heartBeat = true
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		go rf.followerLoop()
+		if rf.state != Follower {
+			fmt.Println(rf.me,"get appent",args)
+			go rf.followerLoop()
+		}
 	} else if args.Term < rf.currentTerm {
 		reply.Success = false
 	} else if rf.state == Candidate {
+		fmt.Println(rf.me,"get appent",args)
 		go rf.followerLoop()
 	}
 	reply.Term = rf.currentTerm

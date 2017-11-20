@@ -86,7 +86,6 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
 	var isLeader bool
 	// Your code here.
@@ -209,19 +208,32 @@ func RandElectionTimeout() int {
 	return rand.Intn(500) + 500
 }
 
-func (rf *Raft) followerLoop(){
+func (rf *Raft) X2Follower(){
 	fmt.Println(rf.me,"becomes follower")
 	rf.state = Follower
+	go rf.followerLoop()
+}
+
+func (rf *Raft) X2Candidate(){
+	fmt.Println(rf.me,"becomes candidate")
+	rf.state = Candidate
+	go rf.candidateLoop()
+}
+
+func (rf *Raft) X2Leader(){
+	fmt.Println(rf.me,"becomes leader")
+	rf.state = Leader
+	go rf.leaderLoop()
+}
+
+func (rf *Raft) followerLoop(){
 	rf.heartBeat = false
-	// random election timeout [10,500]ms
+	// random election timeout [500,1000]ms
 	for rf.state == Follower {
 		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
  		<-timer.C
-		if rf.state != Follower {
-			return
-		}
-		if !rf.heartBeat {
-			go rf.candidateLoop()
+		if rf.state == Follower && !rf.heartBeat {
+			rf.X2Candidate()
 			return
 		}
 		rf.heartBeat = false
@@ -229,8 +241,6 @@ func (rf *Raft) followerLoop(){
 }
 
 func (rf *Raft) candidateLoop(){
-	fmt.Println(rf.me,"becomes candidate")
-	rf.state = Candidate
 	for rf.state == Candidate {
 		rf.currentTerm++
 		// vote for itself
@@ -249,9 +259,9 @@ func (rf *Raft) candidateLoop(){
 				reply := <-ch
 				fmt.Println(rf.me, "get vote reply", reply)
 				if reply != nil {
-					if reply.Term > rf.currentTerm {
+					if rf.state == Candidate && reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
-						go rf.followerLoop()
+						rf.X2Follower()
 						return
 					} else if reply.VoteGranted {
 						votes++
@@ -259,8 +269,8 @@ func (rf *Raft) candidateLoop(){
 				}
 			}
 		}
-		if votes >= len(rf.peers)/2+1 {
-			go rf.leaderLoop()
+		if rf.state == Candidate && votes >= len(rf.peers)/2+1 {
+			rf.X2Leader()
 			return
 		}
 		<-timer.C
@@ -271,9 +281,7 @@ func (rf *Raft) candidateLoop(){
 }
 
 func (rf *Raft) leaderLoop(){
-	fmt.Println(rf.me,"becomes leader")
-	rf.state = Leader
-	for rf.state == Leader{
+	for rf.state == Leader {
 		ch := make(chan *AppendEntriesReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
@@ -284,9 +292,9 @@ func (rf *Raft) leaderLoop(){
 			if i != rf.me {
 				reply := <-ch
 				if reply != nil {
-					if reply.Term > rf.currentTerm {
+					if rf.state == Leader && reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
-						go rf.followerLoop()
+						rf.X2Follower()
 						return
 					}
 				}
@@ -329,24 +337,51 @@ func (rf *Raft) MakeRequestVoteArgs() RequestVoteArgs{
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	//fmt.Println(rf.me,"receive request vote",args)
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.voteFor = -1
-		if rf.state != Follower {
+	//rf.mu.Lock()
+	reply.VoteGranted = false
+	if rf.state == Follower {
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
+			rf.voteFor = -1
+			if rf.isUp2Date(args) {
+				rf.voteFor = args.CandidateId
+				// grant votes to candidate will reset heartbeat
+				rf.heartBeat = true
+				reply.VoteGranted = true
+			}
+		} else if args.Term == rf.currentTerm {
+			if (rf.voteFor == -1 || rf.voteFor == args.CandidateId) && rf.isUp2Date(args) {
+				rf.voteFor = args.CandidateId
+				// grant votes to candidate will reset heartbeat
+				rf.heartBeat = true
+				reply.VoteGranted = true
+			}
+		}
+	} else if rf.state == Candidate {
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
+			rf.voteFor = -1
 			fmt.Println(rf.me,"get reqvot",args)
-			go rf.followerLoop()
+			rf.X2Follower()
+			if rf.isUp2Date(args) {
+				rf.voteFor = args.CandidateId
+				reply.VoteGranted = true
+			}
+		}
+	} else if rf.state == Leader {
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
+			rf.voteFor = -1
+			fmt.Println(rf.me,"get reqvot",args)
+			rf.X2Follower()
+			if rf.isUp2Date(args) {
+				rf.voteFor = args.CandidateId
+				reply.VoteGranted = true
+			}
 		}
 	}
 	reply.Term = rf.currentTerm
-	reply.VoteGranted = false
-	if args.Term < rf.currentTerm {
-		return
-	}
-	// some candidate may vote for itself
-	if (rf.voteFor == -1 || rf.voteFor == args.CandidateId) && rf.isUp2Date(args) {
-		reply.VoteGranted = true
-		rf.voteFor = args.CandidateId
-	}
+	//rf.mu.Unlock()
 }
 
 func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
@@ -419,20 +454,27 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	// just deal with heart beat
 	//fmt.Println(rf.me,"receive append entries",args)
-	rf.heartBeat = true
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		if rf.state != Follower {
-			fmt.Println(rf.me,"get appent",args)
-			go rf.followerLoop()
+	//rf.mu.Lock()
+	if rf.state == Follower {
+		rf.heartBeat = true
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
 		}
-	} else if args.Term < rf.currentTerm {
-		reply.Success = false
 	} else if rf.state == Candidate {
-		fmt.Println(rf.me,"get appent",args)
-		go rf.followerLoop()
+		if args.Term >= rf.currentTerm {
+			rf.currentTerm = args.Term
+			fmt.Println(rf.me,"get appent",args)
+			rf.X2Follower()
+		}
+	} else if rf.state == Leader {
+		if args.Term > rf.currentTerm {
+			rf.currentTerm = args.Term
+			fmt.Println(rf.me,"get appent",args)
+			rf.X2Follower()
+		}
 	}
 	reply.Term = rf.currentTerm
+	//rf.mu.Unlock()
 }
 
 func (rf *Raft) MakeHeartBeat() AppendEntriesArgs {

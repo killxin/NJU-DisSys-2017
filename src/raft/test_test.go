@@ -19,6 +19,13 @@ import "sync"
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
+//func TestElection100Times(t *testing.T) {
+//	for i:=0;i<100;i++ {
+//		TestInitialElection(t);
+//		TestReElection(t);
+//	}
+//}
+
 func TestInitialElection(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)

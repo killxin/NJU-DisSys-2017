@@ -242,18 +242,21 @@ func (rf *Raft) followerLoop(){
 
 func (rf *Raft) candidateLoop(){
 	for rf.state == Candidate {
+		rf.mu.Lock()
 		rf.currentTerm++
 		// vote for itself
 		rf.voteFor = rf.me
 		votes := 1
 		fmt.Println(rf.me,"start election term",rf.currentTerm)
-		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
 		ch := make(chan *RequestVoteReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go rf.SendRequestVote(i, ch)
 			}
 		}
+		rf.mu.Unlock()
+
+		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				reply := <-ch
@@ -274,20 +277,20 @@ func (rf *Raft) candidateLoop(){
 			return
 		}
 		<-timer.C
-		if rf.state != Candidate {
-			return
-		}
 	}
 }
 
 func (rf *Raft) leaderLoop(){
 	for rf.state == Leader {
+		rf.mu.Lock()
 		ch := make(chan *AppendEntriesReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				go rf.SendHeartBeat(i, ch)
 			}
 		}
+		rf.mu.Unlock()
+
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				reply := <-ch
@@ -337,7 +340,8 @@ func (rf *Raft) MakeRequestVoteArgs() RequestVoteArgs{
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	//fmt.Println(rf.me,"receive request vote",args)
-	//rf.mu.Lock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	reply.VoteGranted = false
 	if rf.state == Follower {
 		if args.Term > rf.currentTerm {
@@ -381,7 +385,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	reply.Term = rf.currentTerm
-	//rf.mu.Unlock()
 }
 
 func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
@@ -454,7 +457,8 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	// just deal with heart beat
 	//fmt.Println(rf.me,"receive append entries",args)
-	//rf.mu.Lock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.state == Follower {
 		rf.heartBeat = true
 		if args.Term > rf.currentTerm {
@@ -474,7 +478,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		}
 	}
 	reply.Term = rf.currentTerm
-	//rf.mu.Unlock()
 }
 
 func (rf *Raft) MakeHeartBeat() AppendEntriesArgs {

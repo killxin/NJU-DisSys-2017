@@ -81,6 +81,8 @@ type Raft struct {
 	matchIndex	[]int
 	// Having received AppendEntries on followers
 	heartBeat	bool
+	logStartCh	chan interface{}
+	logEndCh	chan interface{}
 }
 
 // return currentTerm and whether this server
@@ -149,10 +151,14 @@ func (rf *Raft) readPersist(data []byte) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := rf.lastApplied + 1
 	term,isLeader := rf.GetState()
 	if isLeader {
 		// add command to log
+		entry := LogEntry{term,command}
+		rf.log = append(rf.log,entry)
 	}
 	return index, term, isLeader
 }
@@ -195,6 +201,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = nil
 	rf.matchIndex = nil
 	rf.heartBeat = false
+	rf.logStartCh = make(chan interface{})
+	rf.logEndCh = make(chan interface{})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -282,27 +290,53 @@ func (rf *Raft) candidateLoop(){
 
 func (rf *Raft) leaderLoop(){
 	for rf.state == Leader {
+		timer := time.NewTimer(time.Duration(100) * time.Millisecond)
+		select {
+			case <-timer.C:
+			case <-rf.logStartCh:
+		}
 		rf.mu.Lock()
 		ch := make(chan *AppendEntriesReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
-				go rf.SendHeartBeat(i, ch)
+				args := rf.MakeAppendEntriesArgs(i)
+				go rf.SendAppendEntries(i,args,ch)
 			}
 		}
 		rf.mu.Unlock()
-
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				reply := <-ch
-				if reply != nil {
-					if rf.state == Leader && reply.Term > rf.currentTerm {
+				if reply != nil && rf.state == Leader {
+					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
 						rf.X2Follower()
 						return
+					} else if reply.Success {
+						rf.nextIndex[i] = len(rf.log)
+						rf.matchIndex[i] = len(rf.log) - 1
+					} else {
+						rf.nextIndex[i]--
 					}
 				}
 			}
 		}
+		rf.mu.Lock()
+		for N:=len(rf.log)-1;N>rf.commitIndex;N-- {
+			if rf.log[N].Term == rf.currentTerm {
+				count := 0
+				for i := 0; i < len(rf.peers); i++ {
+					if i != rf.me && rf.matchIndex[i] >= N {
+						count++
+					}
+				}
+				if count >= len(rf.peers) / 2 {
+					rf.commitIndex = N
+					break
+				}
+			}
+		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -464,27 +498,63 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		if args.Term > rf.currentTerm {
 			rf.currentTerm = args.Term
 		}
+		// deal log replication
+		if args.Term < rf.currentTerm ||
+			args.PrevLogIndex >= len(rf.log) ||
+			rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+			reply.Success = false
+		} else {
+			if len(rf.log) > args.PrevLogIndex+1 {
+				rf.log = rf.log[:args.PrevLogIndex+1]
+			}
+			rf.log = append(rf.log, args.Entries...)
+			if args.LeaderCommit > rf.commitIndex {
+				rf.commitIndex = args.LeaderCommit
+				if rf.commitIndex < len(rf.log)-1 {
+					rf.commitIndex = len(rf.log) - 1
+				}
+			}
+			reply.Success = true
+		}
 	} else if rf.state == Candidate {
 		if args.Term >= rf.currentTerm {
 			rf.currentTerm = args.Term
 			fmt.Println(rf.me,"get appent",args)
 			rf.X2Follower()
 		}
+		reply.Success = true
 	} else if rf.state == Leader {
 		if args.Term > rf.currentTerm {
 			rf.currentTerm = args.Term
 			fmt.Println(rf.me,"get appent",args)
 			rf.X2Follower()
 		}
+		reply.Success = true
 	}
 	reply.Term = rf.currentTerm
 }
 
-func (rf *Raft) MakeHeartBeat() AppendEntriesArgs {
+func (rf *Raft) MakeAppendEntriesArgs(i int) AppendEntriesArgs {
 	args := AppendEntriesArgs{}
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
-	// skip some fields
+	if len(rf.log) -1 >= rf.nextIndex[i] {
+		if rf.nextIndex[i] == 0 {
+			args.PrevLogIndex = -1
+			args.PrevLogTerm = -1
+		} else {
+			args.PrevLogIndex = rf.nextIndex[i] - 1
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		}
+		args.Entries = rf.log[rf.nextIndex[i]:]
+		args.LeaderCommit = rf.commitIndex
+	} else {
+		// heart beat
+		args.PrevLogIndex = - 1
+		args.PrevLogTerm = -1
+		args.Entries = []LogEntry{}
+		args.LeaderCommit = rf.commitIndex
+	}
 	return args
 }
 
@@ -503,9 +573,9 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	}
 }
 
-func (rf *Raft) SendHeartBeat(i int,ch chan *AppendEntriesReply) {
+func (rf *Raft) SendAppendEntries(i int, args AppendEntriesArgs, ch chan *AppendEntriesReply) {
 	reply := &AppendEntriesReply{}
-	if rf.sendAppendEntries(i, rf.MakeHeartBeat(), reply) {
+	if rf.sendAppendEntries(i, args, reply) {
 		ch <- reply
 	} else {
 		ch <- nil

@@ -302,8 +302,6 @@ func (rf *Raft) candidateLoop(){
 
 func (rf *Raft) leaderLoop(){
 	for rf.state == Leader {
-		timer := time.NewTimer(time.Duration(100) * time.Millisecond)
-		<-timer.C
 		rf.mu.Lock()
 		args := make([]AppendEntriesArgs,len(rf.peers))
 		ch := make(chan *AppendEntriesReply)
@@ -322,7 +320,7 @@ func (rf *Raft) leaderLoop(){
 					from := reply.From
 					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
-						fmt.Println(i,"get appentries reply",reply)
+						fmt.Println(rf.me,"get appentries reply",reply)
 						rf.X2Follower()
 						return
 					} else if args[from].Entries != nil {
@@ -360,6 +358,8 @@ func (rf *Raft) leaderLoop(){
 			rf.applyCh <- ApplyMsg{Index:i,Command:rf.log[i].Command}
 			rf.lastApplied = i
 		}
+		timer := time.NewTimer(time.Duration(100) * time.Millisecond)
+		<-timer.C
 	}
 }
 
@@ -379,6 +379,7 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here.
+	From		 int // for debug
 	Term        int
 	VoteGranted bool
 }
@@ -386,8 +387,8 @@ type RequestVoteReply struct {
 func (rf *Raft) MakeRequestVoteArgs() RequestVoteArgs{
 	args := RequestVoteArgs{}
 	args.Term = rf.currentTerm
-	args.CandidateId = rf.me
-	// skip some fields
+	args.LastLogIndex = len(rf.log) -1
+	args.LastLogTerm = rf.log[len(rf.log)-1].Term
 	return args
 }
 
@@ -441,14 +442,16 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 			}
 		}
 	}
+	reply.From = rf.me
 	reply.Term = rf.currentTerm
 }
 
 func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
-	if rf.log[rf.lastApplied].Term != args.LastLogTerm {
-		return rf.log[rf.lastApplied].Term < args.LastLogTerm
+	fmt.Println(rf.me,rf.log,"vs.",args)
+	if rf.log[len(rf.log)-1].Term != args.LastLogTerm {
+		return rf.log[len(rf.log)-1].Term < args.LastLogTerm
 	} else {
-		return rf.lastApplied <= args.LastLogIndex
+		return len(rf.log) - 1 <= args.LastLogIndex
 	}
 }
 
@@ -539,33 +542,38 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	reply.From = rf.me
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
+		fmt.Println(rf.me, "get appent", args)
 		return
 	}
 	// deal log replication
 	if args.Entries != nil {
 		fmt.Println(rf.me, "get appent", args)
-		if args.PrevLogIndex >= 0 && (args.Term < rf.currentTerm ||
-			args.PrevLogIndex >= len(rf.log) ||
-			rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
-			reply.Success = false
-		} else {
-			if len(rf.log) > args.PrevLogIndex+1 {
-				rf.log = rf.log[:args.PrevLogIndex+1]
-			}
-			rf.log = append(rf.log, args.Entries...)
-			fmt.Println(rf.me,"log", rf.log)
-			reply.Success = true
+	}
+	if args.Term < rf.currentTerm ||
+		args.PrevLogIndex >= len(rf.log) ||
+		rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+	} else {
+		if len(rf.log) > args.PrevLogIndex+1 {
+			rf.log = rf.log[:args.PrevLogIndex+1]
 		}
-	}
-	if args.LeaderCommit > rf.commitIndex {
-		N := int(math.Min(float64(args.LeaderCommit),float64(len(rf.log)-1)))
-		fmt.Println(rf.me, "commitIndex", N)
-		rf.commitIndex = N
-	}
-	for i:=rf.lastApplied+1;i<=rf.commitIndex;i++{
-		fmt.Println(rf.me,"applies",rf.log[i].Command)
-		rf.applyCh <- ApplyMsg{Index:i,Command:rf.log[i].Command}
-		rf.lastApplied = i
+		rf.log = append(rf.log, args.Entries...)
+		if args.Entries != nil {
+			fmt.Println(rf.me, "log", rf.log)
+		}
+		reply.Success = true
+
+		if args.LeaderCommit > rf.commitIndex {
+			fmt.Println(rf.me, "get appent", args)
+			N := int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
+			fmt.Println(rf.me, "commitIndex", N)
+			rf.commitIndex = N
+		}
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			fmt.Println(rf.me, "applies", rf.log[i].Command)
+			rf.applyCh <- ApplyMsg{Index: i, Command: rf.log[i].Command}
+			rf.lastApplied = i
+		}
 	}
 }
 
@@ -574,18 +582,13 @@ func (rf *Raft) MakeAppendEntriesArgs(i int) AppendEntriesArgs {
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
 	if len(rf.log) > rf.nextIndex[i] {
-		//if rf.nextIndex[i] == 0 {
-		//	args.PrevLogIndex = -1
-		//	args.PrevLogTerm = -1
-		//} else {
 		args.PrevLogIndex = rf.nextIndex[i] - 1
 		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-		//}
 		args.Entries = rf.log[rf.nextIndex[i]:]
 	} else {
 		// heart beat
-		args.PrevLogIndex = 0
-		args.PrevLogTerm = 0
+		args.PrevLogIndex = len(rf.log) - 1
+		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 		args.Entries = nil
 	}
 	args.LeaderCommit = rf.commitIndex

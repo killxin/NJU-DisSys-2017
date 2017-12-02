@@ -318,18 +318,21 @@ func (rf *Raft) leaderLoop(){
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				reply := <-ch
-				//fmt.Println(i,"appentries reply",reply)
 				if reply != nil && rf.state == Leader {
+					from := reply.From
 					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
+						fmt.Println(i,"get appentries reply",reply)
 						rf.X2Follower()
 						return
-					} else if args[i].Entry.Command != nil {
+					} else if args[from].Entries != nil {
 						if reply.Success {
-							rf.matchIndex[i] = rf.nextIndex[i]
-							rf.nextIndex[i]++
+							rf.matchIndex[from] = len(rf.log) - 1
+							rf.nextIndex[from] = len(rf.log)
+							fmt.Println(from,"increase nextIndex",rf.nextIndex[from])
 						} else {
-							rf.nextIndex[i]--
+							rf.nextIndex[from]--
+							fmt.Println(from,"decrease nextIndex",rf.nextIndex[from])
 						}
 					}
 				}
@@ -346,17 +349,17 @@ func (rf *Raft) leaderLoop(){
 				}
 				if count >= len(rf.peers) / 2 {
 					fmt.Println(rf.me,"commitIndex",N)
-					for i:=N;i>rf.commitIndex;i--{
-						fmt.Println(rf.me,"applies",rf.log[N].Command)
-						rf.applyCh <- ApplyMsg{Index:N,Command:rf.log[N].Command}
-					}
 					rf.commitIndex = N
-					rf.lastApplied = N
 					break
 				}
 			}
 		}
 		rf.mu.Unlock()
+		for i:=rf.lastApplied+1;i<=rf.commitIndex;i++{
+			fmt.Println(rf.me,"applies",rf.log[i].Command)
+			rf.applyCh <- ApplyMsg{Index:i,Command:rf.log[i].Command}
+			rf.lastApplied = i
+		}
 	}
 }
 
@@ -419,7 +422,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		if args.Term > rf.currentTerm {
 			rf.currentTerm = args.Term
 			rf.voteFor = -1
-			fmt.Println(rf.me,"get reqvot",args)
+			fmt.Println(rf.me,"candidate get reqvot",args)
 			rf.X2Follower()
 			if rf.isUp2Date(args) {
 				rf.voteFor = args.CandidateId
@@ -430,7 +433,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		if args.Term > rf.currentTerm {
 			rf.currentTerm = args.Term
 			rf.voteFor = -1
-			fmt.Println(rf.me,"get reqvot",args)
+			fmt.Println(rf.me,"leader get reqvot",args)
 			rf.X2Follower()
 			if rf.isUp2Date(args) {
 				rf.voteFor = args.CandidateId
@@ -498,12 +501,12 @@ type AppendEntriesArgs struct {
 	LeaderId		int
 	PrevLogIndex	int
 	PrevLogTerm		int
-	Entry		 	LogEntry
-	//Entries      []LogEntry //bug when encoding
+	Entries      []LogEntry //bug when encoding
 	LeaderCommit 	int
 }
 
 type AppendEntriesReply struct {
+	From		int
 	Term		int
 	Success		bool
 }
@@ -521,21 +524,25 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	} else if rf.state == Candidate {
 		if args.Term >= rf.currentTerm {
 			rf.currentTerm = args.Term
-			fmt.Println(rf.me,"get appent",args)
+			fmt.Println(rf.me,"candidate get appent",args)
 			rf.X2Follower()
 		}
 		reply.Success = true
 	} else if rf.state == Leader {
 		if args.Term > rf.currentTerm {
 			rf.currentTerm = args.Term
-			fmt.Println(rf.me,"get appent",args)
+			fmt.Println(rf.me,"leader get appent",args)
 			rf.X2Follower()
 		}
 		reply.Success = true
 	}
+	reply.From = rf.me
 	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		return
+	}
 	// deal log replication
-	if args.Entry.Command != nil {
+	if args.Entries != nil {
 		fmt.Println(rf.me, "get appent", args)
 		if args.PrevLogIndex >= 0 && (args.Term < rf.currentTerm ||
 			args.PrevLogIndex >= len(rf.log) ||
@@ -545,7 +552,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			if len(rf.log) > args.PrevLogIndex+1 {
 				rf.log = rf.log[:args.PrevLogIndex+1]
 			}
-			rf.log = append(rf.log, args.Entry)
+			rf.log = append(rf.log, args.Entries...)
 			fmt.Println(rf.me,"log", rf.log)
 			reply.Success = true
 		}
@@ -553,12 +560,12 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	if args.LeaderCommit > rf.commitIndex {
 		N := int(math.Min(float64(args.LeaderCommit),float64(len(rf.log)-1)))
 		fmt.Println(rf.me, "commitIndex", N)
-		for i:=N;i>rf.commitIndex;i--{
-			fmt.Println(rf.me,"applies",rf.log[N].Command)
-			rf.applyCh <- ApplyMsg{Index:N,Command:rf.log[N].Command}
-		}
 		rf.commitIndex = N
-		rf.lastApplied = N
+	}
+	for i:=rf.lastApplied+1;i<=rf.commitIndex;i++{
+		fmt.Println(rf.me,"applies",rf.log[i].Command)
+		rf.applyCh <- ApplyMsg{Index:i,Command:rf.log[i].Command}
+		rf.lastApplied = i
 	}
 }
 
@@ -574,12 +581,12 @@ func (rf *Raft) MakeAppendEntriesArgs(i int) AppendEntriesArgs {
 		args.PrevLogIndex = rf.nextIndex[i] - 1
 		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
 		//}
-		args.Entry = rf.log[rf.nextIndex[i]]
+		args.Entries = rf.log[rf.nextIndex[i]:]
 	} else {
 		// heart beat
 		args.PrevLogIndex = 0
 		args.PrevLogTerm = 0
-		args.Entry = LogEntry{0,nil}
+		args.Entries = nil
 	}
 	args.LeaderCommit = rf.commitIndex
 	return args
@@ -608,4 +615,3 @@ func (rf *Raft) SendAppendEntries(i int, args AppendEntriesArgs, ch chan *Append
 		ch <- nil
 	}
 }
-

@@ -116,6 +116,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.voteFor)
 	e.Encode(rf.log)
 	data := w.Bytes()
+	//fmt.Println(rf.me,"presist",rf.currentTerm,rf.voteFor,rf.log)
 	rf.persister.SaveRaftState(data)
 }
 
@@ -129,11 +130,12 @@ func (rf *Raft) readPersist(data []byte) {
 	// d := gob.NewDecoder(r)
 	// d.Decode(&rf.xxx)
 	// d.Decode(&rf.yyy)
-	 r := bytes.NewBuffer(data)
-	 d := gob.NewDecoder(r)
-	 d.Decode(&rf.currentTerm)
-	 d.Decode(&rf.voteFor)
-	 d.Decode(&rf.log)
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.voteFor)
+	d.Decode(&rf.log)
+	//fmt.Println(rf.me,"readPresist",rf.currentTerm,rf.voteFor,rf.log)
 }
 
 
@@ -159,6 +161,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.mu.Lock()
 		entry := LogEntry{term,command}
 		rf.log = append(rf.log, entry)
+		rf.persist()
 		fmt.Println(rf.me,"log",rf.log)
 		index = len(rf.log) - 1
 		// issue AppendEntries RPCs to others
@@ -266,6 +269,7 @@ func (rf *Raft) candidateLoop(){
 		rf.currentTerm++
 		// vote for itself
 		rf.voteFor = rf.me
+		rf.persist()
 		votes := 1
 		fmt.Println(rf.me,"start election term",rf.currentTerm)
 		ch := make(chan *RequestVoteReply)
@@ -284,6 +288,7 @@ func (rf *Raft) candidateLoop(){
 				if reply != nil {
 					if rf.state == Candidate && reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
+						rf.persist()
 						rf.X2Follower()
 						return
 					} else if reply.VoteGranted {
@@ -308,7 +313,6 @@ func (rf *Raft) leaderLoop(){
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
 				args[i] = rf.MakeAppendEntriesArgs(i)
-				//fmt.Println(i,"appentries args",args)
 				go rf.SendAppendEntries(i,args[i],ch)
 			}
 		}
@@ -320,17 +324,18 @@ func (rf *Raft) leaderLoop(){
 					from := reply.From
 					if reply.Term > rf.currentTerm {
 						rf.currentTerm = reply.Term
+						rf.persist()
 						fmt.Println(rf.me,"get appentries reply",reply)
 						rf.X2Follower()
 						return
-					} else if args[from].Entries != nil {
+					} else if len(args[from].Entries) != 0 {
 						if reply.Success {
 							rf.matchIndex[from] = len(rf.log) - 1
 							rf.nextIndex[from] = len(rf.log)
-							fmt.Println(from,"increase nextIndex",rf.nextIndex[from])
+							fmt.Println(from,"increase nextIndex",rf.nextIndex[from],"in",rf.me)
 						} else {
 							rf.nextIndex[from]--
-							fmt.Println(from,"decrease nextIndex",rf.nextIndex[from])
+							fmt.Println(from,"decrease nextIndex",rf.nextIndex[from],"in",rf.me)
 						}
 					}
 				}
@@ -389,6 +394,7 @@ func (rf *Raft) MakeRequestVoteArgs() RequestVoteArgs{
 	args.Term = rf.currentTerm
 	args.LastLogIndex = len(rf.log) -1
 	args.LastLogTerm = rf.log[len(rf.log)-1].Term
+	args.CandidateId = rf.me
 	return args
 }
 
@@ -400,6 +406,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	//fmt.Println(rf.me,"receive request vote",args)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	reply.VoteGranted = false
 	if rf.state == Follower {
 		if args.Term > rf.currentTerm {
@@ -447,7 +454,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
-	fmt.Println(rf.me,rf.log,"vs.",args)
+	//fmt.Println(rf.me,rf.log,"vs.",args)
 	if rf.log[len(rf.log)-1].Term != args.LastLogTerm {
 		return rf.log[len(rf.log)-1].Term < args.LastLogTerm
 	} else {
@@ -519,6 +526,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	//fmt.Println(rf.me,"receive append entries",args)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if rf.state == Follower {
 		rf.heartBeat = true
 		if args.Term > rf.currentTerm {
@@ -546,8 +554,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		return
 	}
 	// deal log replication
-	if args.Entries != nil {
-		fmt.Println(rf.me, "get appent", args)
+	if len(args.Entries)!=0 {
+		fmt.Println(rf.me, "get appent",args)
 	}
 	if args.Term < rf.currentTerm ||
 		args.PrevLogIndex >= len(rf.log) ||
@@ -558,13 +566,12 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			rf.log = rf.log[:args.PrevLogIndex+1]
 		}
 		rf.log = append(rf.log, args.Entries...)
-		if args.Entries != nil {
+		if len(args.Entries) != 0 {
 			fmt.Println(rf.me, "log", rf.log)
 		}
 		reply.Success = true
 
 		if args.LeaderCommit > rf.commitIndex {
-			fmt.Println(rf.me, "get appent", args)
 			N := int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
 			fmt.Println(rf.me, "commitIndex", N)
 			rf.commitIndex = N
@@ -581,16 +588,10 @@ func (rf *Raft) MakeAppendEntriesArgs(i int) AppendEntriesArgs {
 	args := AppendEntriesArgs{}
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
-	if len(rf.log) > rf.nextIndex[i] {
-		args.PrevLogIndex = rf.nextIndex[i] - 1
-		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-		args.Entries = rf.log[rf.nextIndex[i]:]
-	} else {
-		// heart beat
-		args.PrevLogIndex = len(rf.log) - 1
-		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-		args.Entries = nil
-	}
+	// if len(rf.log) == rf.nextIndex[i] HeartBeat
+	args.PrevLogIndex = rf.nextIndex[i] - 1
+	args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+	args.Entries = rf.log[rf.nextIndex[i]:] // index out of length return []
 	args.LeaderCommit = rf.commitIndex
 	return args
 }

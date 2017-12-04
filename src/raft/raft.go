@@ -328,15 +328,17 @@ func (rf *Raft) leaderLoop(){
 						fmt.Println(rf.me,"get appentries reply",reply)
 						rf.X2Follower()
 						return
-					} else if len(args[from].Entries) != 0 {
-						if reply.Success {
-							rf.matchIndex[from] = len(rf.log) - 1
-							rf.nextIndex[from] = len(rf.log)
-							fmt.Println(from,"increase nextIndex",rf.nextIndex[from],"in",rf.me)
-						} else {
-							rf.nextIndex[from]--
-							fmt.Println(from,"decrease nextIndex",rf.nextIndex[from],"in",rf.me)
+					} else if reply.Success {
+						rf.matchIndex[from] = len(rf.log) - 1
+						rf.nextIndex[from] = len(rf.log)
+						if len(args[from].Entries) != 0 {
+							fmt.Println(from, "increase nextIndex", rf.nextIndex[from], "in", rf.me)
 						}
+					} else {
+						//rf.nextIndex[from]--
+						// optimization
+						rf.nextIndex[from] -= reply.Decrement
+						fmt.Println(from, "decrease nextIndex", rf.nextIndex[from], "in", rf.me)
 					}
 				}
 			}
@@ -363,10 +365,12 @@ func (rf *Raft) leaderLoop(){
 			rf.applyCh <- ApplyMsg{Index:i,Command:rf.log[i].Command}
 			rf.lastApplied = i
 		}
-		timer := time.NewTimer(time.Duration(100) * time.Millisecond)
+		timer := time.NewTimer(time.Duration(2 * RPCTimeout) * time.Millisecond)
 		<-timer.C
 	}
 }
+
+const RPCTimeout = 100
 
 //
 // example RequestVote RPC arguments structure.
@@ -484,7 +488,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 	go func(){
 		ch <- rf.peers[server].Call("Raft.RequestVote", args, reply)
 	}()
-	timer := time.NewTimer(time.Duration(5) * time.Millisecond)
+	timer := time.NewTimer(time.Duration(RPCTimeout) * time.Millisecond)
 	select{
 	case <-timer.C:
 		//fmt.Println(server,"Call Raft.RequestVote Timeout")
@@ -519,6 +523,7 @@ type AppendEntriesReply struct {
 	From		int
 	Term		int
 	Success		bool
+	Decrement	int
 }
 
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -557,10 +562,23 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	if len(args.Entries)!=0 {
 		fmt.Println(rf.me, "get appent",args)
 	}
-	if args.Term < rf.currentTerm ||
-		args.PrevLogIndex >= len(rf.log) ||
-		rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if args.Term < rf.currentTerm {
 		reply.Success = false
+		reply.Decrement = 0
+	} else if args.PrevLogIndex >= len(rf.log) {
+		reply.Success = false
+		// optimization
+		reply.Decrement = args.PrevLogIndex - len(rf.log) + 1
+	} else if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		reply.Decrement = 1
+		// optimization
+		for i:=args.PrevLogIndex-1;i>=0;i--{
+			if rf.log[i].Term != rf.log[args.PrevLogIndex].Term {
+				reply.Decrement = args.PrevLogIndex - i
+				break
+			}
+		}
 	} else {
 		if len(rf.log) > args.PrevLogIndex+1 {
 			rf.log = rf.log[:args.PrevLogIndex+1]
@@ -601,7 +619,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	go func(){
 		ch <- rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	}()
-	timer := time.NewTimer(time.Duration(5) * time.Millisecond)
+	timer := time.NewTimer(time.Duration(RPCTimeout) * time.Millisecond)
 	select{
 	case <-timer.C:
 		//fmt.Println(server,"Call Raft.AppendEntries Timeout")

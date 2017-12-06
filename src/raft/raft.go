@@ -83,6 +83,8 @@ type Raft struct {
 	// Having received AppendEntries on followers
 	heartBeat	bool
 	applyCh 	chan ApplyMsg
+	// Count votes in Candidate
+	votes		int
 }
 
 // return currentTerm and whether this server
@@ -163,7 +165,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.log = append(rf.log, entry)
 		rf.persist()
 		fmt.Println(rf.me,"log",rf.log)
-		index = len(rf.log) - 1
+		index = len(rf.log)
 		// issue AppendEntries RPCs to others
 		// respond after entry applied to state machine
 		rf.mu.Unlock()
@@ -210,7 +212,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = nil
 	rf.heartBeat = false
 	rf.applyCh = applyCh
-
+	rf.votes = 0
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -270,79 +272,21 @@ func (rf *Raft) candidateLoop(){
 		// vote for itself
 		rf.voteFor = rf.me
 		rf.persist()
-		votes := 1
+		rf.votes = 1
 		fmt.Println(rf.me,"start election term",rf.currentTerm)
-		ch := make(chan *RequestVoteReply)
 		for i := 0; i < len(rf.peers); i++ {
 			if i != rf.me {
-				go rf.SendRequestVote(i, ch)
+				go rf.SendRequestVote(i)
 			}
 		}
 		rf.mu.Unlock()
-
 		timer := time.NewTimer(time.Duration(RandElectionTimeout()) * time.Millisecond)
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me {
-				reply := <-ch
-				fmt.Println(rf.me, "get vote reply", reply)
-				if reply != nil {
-					if rf.state == Candidate && reply.Term > rf.currentTerm {
-						rf.currentTerm = reply.Term
-						rf.persist()
-						rf.X2Follower()
-						return
-					} else if reply.VoteGranted {
-						votes++
-					}
-				}
-			}
-		}
-		if rf.state == Candidate && votes >= len(rf.peers)/2+1 {
-			rf.X2Leader()
-			return
-		}
 		<-timer.C
 	}
 }
 
 func (rf *Raft) leaderLoop(){
 	for rf.state == Leader {
-		rf.mu.Lock()
-		args := make([]AppendEntriesArgs,len(rf.peers))
-		ch := make(chan *AppendEntriesReply)
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me {
-				args[i] = rf.MakeAppendEntriesArgs(i)
-				go rf.SendAppendEntries(i,args[i],ch)
-			}
-		}
-		rf.mu.Unlock()
-		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me {
-				reply := <-ch
-				if reply != nil && rf.state == Leader {
-					from := reply.From
-					if reply.Term > rf.currentTerm {
-						rf.currentTerm = reply.Term
-						rf.persist()
-						fmt.Println(rf.me,"get appentries reply",reply)
-						rf.X2Follower()
-						return
-					} else if reply.Success {
-						rf.matchIndex[from] = len(rf.log) - 1
-						rf.nextIndex[from] = len(rf.log)
-						if len(args[from].Entries) != 0 {
-							fmt.Println(from, "increase nextIndex", rf.nextIndex[from], "in", rf.me)
-						}
-					} else {
-						//rf.nextIndex[from]--
-						// optimization
-						rf.nextIndex[from] -= reply.Decrement
-						fmt.Println(from, "decrease nextIndex", rf.nextIndex[from], "in", rf.me)
-					}
-				}
-			}
-		}
 		rf.mu.Lock()
 		for N:=len(rf.log)-1;N>rf.commitIndex;N-- {
 			if rf.log[N].Term == rf.currentTerm {
@@ -359,18 +303,27 @@ func (rf *Raft) leaderLoop(){
 				}
 			}
 		}
-		rf.mu.Unlock()
-		for i:=rf.lastApplied+1;i<=rf.commitIndex;i++{
-			fmt.Println(rf.me,"applies",rf.log[i].Command)
-			rf.applyCh <- ApplyMsg{Index:i,Command:rf.log[i].Command}
-			rf.lastApplied = i
+		args := make([]AppendEntriesArgs,len(rf.peers))
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				args[i] = rf.MakeAppendEntriesArgs(i)
+				go rf.SendAppendEntries(i,args[i])
+			}
 		}
-		timer := time.NewTimer(time.Duration(2 * RPCTimeout) * time.Millisecond)
-		<-timer.C
+		rf.mu.Unlock()
+		go func(){
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+				fmt.Println(rf.me, "applies", rf.log[i].Command)
+				rf.applyCh <- ApplyMsg{Index:i, Command:rf.log[i].Command}
+				rf.lastApplied = i
+			}
+		}()
+		//timer := time.NewTimer(time.Duration(200) * time.Millisecond)
+		//<-timer.C
 	}
 }
-
-const RPCTimeout = 100
 
 //
 // example RequestVote RPC arguments structure.
@@ -484,30 +437,29 @@ func (rf *Raft) isUp2Date(args RequestVoteArgs) bool {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	ch := make(chan bool)
-	go func(){
-		ch <- rf.peers[server].Call("Raft.RequestVote", args, reply)
-	}()
-	timer := time.NewTimer(time.Duration(RPCTimeout) * time.Millisecond)
-	select{
-	case <-timer.C:
-		//fmt.Println(server,"Call Raft.RequestVote Timeout")
-		return false
-	case r := <-ch:
-		return r
-	}
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
 }
 
-func (rf *Raft) SendRequestVote(i int, ch chan *RequestVoteReply) {
+func (rf *Raft) SendRequestVote(i int) {
 	reply := &RequestVoteReply{}
 	if rf.sendRequestVote(i, rf.MakeRequestVoteArgs(), reply) {
-		ch <- reply
-	} else {
-		ch <- nil
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		fmt.Println(rf.me, "get vote reply", reply)
+		if rf.state == Candidate && reply.Term > rf.currentTerm {
+			rf.currentTerm = reply.Term
+			rf.persist()
+			rf.X2Follower()
+			return
+		} else if reply.VoteGranted {
+			rf.votes++
+		}
+		if rf.state == Candidate && rf.votes >= len(rf.peers) / 2 + 1 {
+			rf.X2Leader()
+			return
+		}
 	}
-	//timer := time.NewTimer(time.Duration(5) * time.Millisecond)
-	//<- timer.C
-	//ch <- nil
 }
 
 type AppendEntriesArgs struct {
@@ -520,10 +472,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	From		int
+	From		int //for debug
 	Term		int
 	Success		bool
-	Decrement	int
+	//Decrement	int
+	NextIndex	int
 }
 
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -564,18 +517,21 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 	if args.Term < rf.currentTerm {
 		reply.Success = false
-		reply.Decrement = 0
+		//reply.Decrement = 0
+		reply.NextIndex = args.PrevLogIndex + 1
 	} else if args.PrevLogIndex >= len(rf.log) {
 		reply.Success = false
 		// optimization
-		reply.Decrement = args.PrevLogIndex - len(rf.log) + 1
+		//reply.Decrement = args.PrevLogIndex - len(rf.log) + 1
+		reply.NextIndex = len(rf.log)
 	} else if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
-		reply.Decrement = 1
+		//reply.Decrement = 1
 		// optimization
 		for i:=args.PrevLogIndex-1;i>=0;i--{
 			if rf.log[i].Term != rf.log[args.PrevLogIndex].Term {
-				reply.Decrement = args.PrevLogIndex - i
+				//reply.Decrement = args.PrevLogIndex - i
+				reply.NextIndex = i + 1
 				break
 			}
 		}
@@ -588,6 +544,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			fmt.Println(rf.me, "log", rf.log)
 		}
 		reply.Success = true
+		reply.NextIndex = len(rf.log)
 
 		if args.LeaderCommit > rf.commitIndex {
 			N := int(math.Min(float64(args.LeaderCommit), float64(len(rf.log)-1)))
@@ -615,25 +572,35 @@ func (rf *Raft) MakeAppendEntriesArgs(i int) AppendEntriesArgs {
 }
 
 func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ch := make(chan bool)
-	go func(){
-		ch <- rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	}()
-	timer := time.NewTimer(time.Duration(RPCTimeout) * time.Millisecond)
-	select{
-	case <-timer.C:
-		//fmt.Println(server,"Call Raft.AppendEntries Timeout")
-		return false
-	case r := <-ch:
-		return r
-	}
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
 }
 
-func (rf *Raft) SendAppendEntries(i int, args AppendEntriesArgs, ch chan *AppendEntriesReply) {
+func (rf *Raft) SendAppendEntries(i int, args AppendEntriesArgs) {
 	reply := &AppendEntriesReply{}
 	if rf.sendAppendEntries(i, args, reply) {
-		ch <- reply
-	} else {
-		ch <- nil
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.state == Leader {
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.persist()
+				fmt.Println(rf.me, "get appentries reply", reply)
+				rf.X2Follower()
+				return
+			} else if reply.Success {
+				rf.matchIndex[i] = reply.NextIndex - 1//len(rf.log) - 1
+				rf.nextIndex[i] = reply.NextIndex//len(rf.log)
+				if len(args.Entries) != 0 {
+					fmt.Println(i, "increase nextIndex", rf.nextIndex[i], "in", rf.me)
+				}
+			} else {
+				//rf.nextIndex[from]--
+				// optimization
+				//rf.nextIndex[i] -= reply.Decrement
+				rf.nextIndex[i] = reply.NextIndex
+				fmt.Println(i, "decrease nextIndex", rf.nextIndex[i], "in", rf.me)
+			}
+		}
 	}
 }

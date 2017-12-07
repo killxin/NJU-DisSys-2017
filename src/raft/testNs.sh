@@ -1,9 +1,9 @@
 #!/bin/bash
 testers=("Agree" "TestConcurrentStarts" "TestRejoin" "TestBackup" "TestCount" "Persist" "Figure8" "Churn" "Election")
-#for n in `seq ${#testers[*]}`
-#do
-#tester=${testers[n-1]}
-tester="Agree"
+for n in `seq ${#testers[*]}`
+do
+tester=${testers[n-1]}
+#tester="Agree"
 echo $tester
 for i in `seq 10`
 do
@@ -17,4 +17,4 @@ else
 fi
 done
 echo "================"
-#done
+done

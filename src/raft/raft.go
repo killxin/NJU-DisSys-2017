@@ -509,13 +509,15 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 	if args.Term < rf.currentTerm {
 		reply.Success = false
-		reply.NextIndex = 0//useless
+		// leader will become follower then become leader during wait rpc reply
+		reply.NextIndex = args.PrevLogIndex + 1
 	} else if args.PrevLogIndex >= len(rf.log) {
 		reply.Success = false
 		// optimization
 		reply.NextIndex = len(rf.log)
 	} else if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
+		reply.NextIndex = 1
 		// optimization
 		for i:=args.PrevLogIndex-1;i>=0;i--{
 			if rf.log[i].Term != rf.log[args.PrevLogIndex].Term {

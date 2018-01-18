@@ -2,12 +2,21 @@ package raftkv
 
 import "labrpc"
 import "crypto/rand"
-import "math/big"
+import (
+	"math/big"
+	"fmt"
+	"sync"
+	"time"
+)
 
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	mu			sync.Mutex
+	id 			int64
+	index		int
+	lastLeader	int
 }
 
 func nrand() int64 {
@@ -21,6 +30,9 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.id = nrand()
+	ck.lastLeader = 0
+	ck.index = 0
 	return ck
 }
 
@@ -37,9 +49,30 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
-	return ""
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	value := ""
+	for i:=ck.lastLeader;true;i=(i+1)%len(ck.servers) {
+		args := &GetArgs{Key:key,Cid:ck.id,Index:ck.index}
+		reply := &GetReply{}
+		ok := ck.servers[i].Call("RaftKV.Get",args,reply)
+		if ok && !reply.WrongLeader {
+			ck.lastLeader = i
+			if reply.Err != "" {
+				fmt.Printf("Get from %d with error: %s\n", i, reply.Err)
+			} else {
+				value = reply.Value
+				fmt.Println("Get: ",key,value)
+				ck.index++
+				break
+			}
+		} else {
+			fmt.Printf("%d Get <%s,%s,%d> time out from %d\n",ck.id,key,value,ck.index, i)
+		}
+		<- time.After(10 * time.Millisecond)
+	}
+	return value
 }
 
 //
@@ -54,6 +87,27 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	//fmt.Printf("%s <%s,%s>\n",op, key, value)
+	for i := ck.lastLeader; true; i=(i+1)%len(ck.servers) {
+		args := &PutAppendArgs{Key: key, Value: value, Op: op, Cid:ck.id,Index:ck.index}
+		reply := &PutAppendReply{}
+		ok := ck.servers[i].Call("RaftKV.PutAppend", args, reply)
+		if ok && !reply.WrongLeader {
+			ck.lastLeader = i
+			if reply.Err != "" {
+				fmt.Printf("%d %s <%s,%s,%d> to %d with error: %s\n",ck.id,op,key,value,ck.index, i,reply.Err)
+			} else {
+				fmt.Printf("%d %s <%s,%s,%d> success\n",ck.id,op,key,value,ck.index)
+				ck.index++
+				break
+			}
+		} else {
+			fmt.Printf("%d %s <%s,%s,%d> time out from %d\n",ck.id,op,key,value,ck.index, i)
+		}
+		<- time.After(10 * time.Millisecond)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

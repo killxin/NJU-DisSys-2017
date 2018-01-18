@@ -262,6 +262,11 @@ func (rf *Raft) followerLoop(){
 			rf.X2Candidate()
 			return
 		}
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			fmt.Println(rf.me, "applies", rf.log[i].Command)
+			rf.applyCh <- ApplyMsg{Index: i, Command: rf.log[i].Command}
+			rf.lastApplied = i
+		}
 		rf.heartBeat = false
 	}
 }
@@ -311,13 +316,13 @@ func (rf *Raft) leaderLoop(){
 			}
 		}
 		timer := time.NewTimer(time.Duration(200) * time.Millisecond)
-		go func() {
-			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-				fmt.Println(rf.me, "applies", rf.log[i].Command)
-				rf.applyCh <- ApplyMsg{Index: i, Command: rf.log[i].Command}
-				rf.lastApplied = i
-			}
-		}()
+		//go func() {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			fmt.Println(rf.me, "applies", rf.log[i].Command)
+			rf.applyCh <- ApplyMsg{Index: i, Command: rf.log[i].Command}
+			rf.lastApplied = i
+		}
+		//}()
 		<-timer.C
 	}
 }
@@ -541,13 +546,13 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			fmt.Println(rf.me, "commitIndex", N)
 			rf.commitIndex = N
 		}
-		go func() {
-			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-				fmt.Println(rf.me, "applies", rf.log[i].Command)
-				rf.applyCh <- ApplyMsg{Index: i, Command: rf.log[i].Command}
-				rf.lastApplied = i
-			}
-		}()
+		//go func() {
+		//	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		//		fmt.Println(rf.me, "applies", rf.log[i].Command)
+		//		rf.applyCh <- ApplyMsg{Index: i, Command: rf.log[i].Command}
+		//		rf.lastApplied = i
+		//	}
+		//}()
 	}
 }
 

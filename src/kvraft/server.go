@@ -6,7 +6,6 @@ import (
 	"log"
 	"raft"
 	"sync"
-	"fmt"
 	"time"
 )
 
@@ -116,7 +115,7 @@ func (kv *RaftKV) mainLoop(){
 		kv.mu.Lock()
 		op := msg.Command.(Op)
 		if kv.isDuplicate(op.Cid,op.Index) {
-			fmt.Printf("%s <%s,%s> is duplicate RPC\n",op.OP,op.Key,op.Value)
+			DPrintf("%s <%s,%s> is duplicate RPC\n",op.OP,op.Key,op.Value)
 		} else {
 			if op.OP == "Put" {
 				kv.db[op.Key] = op.Value

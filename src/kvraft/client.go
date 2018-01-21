@@ -4,7 +4,6 @@ import "labrpc"
 import "crypto/rand"
 import (
 	"math/big"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -60,15 +59,15 @@ func (ck *Clerk) Get(key string) string {
 		if ok && !reply.WrongLeader {
 			ck.lastLeader = i
 			if reply.Err != "" {
-				fmt.Printf("Get from %d with error: %s\n", i, reply.Err)
+				DPrintf("Get from %d with error: %s\n", i, reply.Err)
 			} else {
 				value = reply.Value
-				fmt.Println("Get: ",key,value)
+				DPrintf("Get: <%s %s> \n",key,value)
 				ck.index++
 				break
 			}
 		} else {
-			fmt.Printf("%d Get <%s,%s,%d> time out from %d\n",ck.id,key,value,ck.index, i)
+			DPrintf("%d Get <%s,%s,%d> time out from %d\n",ck.id,key,value,ck.index, i)
 		}
 		<- time.After(10 * time.Millisecond)
 	}
@@ -89,7 +88,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
-	//fmt.Printf("%s <%s,%s>\n",op, key, value)
+	//DPrintf("%s <%s,%s>\n",op, key, value)
 	for i := ck.lastLeader; true; i=(i+1)%len(ck.servers) {
 		args := &PutAppendArgs{Key: key, Value: value, Op: op, Cid:ck.id,Index:ck.index}
 		reply := &PutAppendReply{}
@@ -97,14 +96,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if ok && !reply.WrongLeader {
 			ck.lastLeader = i
 			if reply.Err != "" {
-				fmt.Printf("%d %s <%s,%s,%d> to %d with error: %s\n",ck.id,op,key,value,ck.index, i,reply.Err)
+				DPrintf("%d %s <%s,%s,%d> to %d with error: %s\n",ck.id,op,key,value,ck.index, i,reply.Err)
 			} else {
-				fmt.Printf("%d %s <%s,%s,%d> success\n",ck.id,op,key,value,ck.index)
+				DPrintf("%d %s <%s,%s,%d> success\n",ck.id,op,key,value,ck.index)
 				ck.index++
 				break
 			}
 		} else {
-			fmt.Printf("%d %s <%s,%s,%d> time out from %d\n",ck.id,op,key,value,ck.index, i)
+			DPrintf("%d %s <%s,%s,%d> time out from %d\n",ck.id,op,key,value,ck.index, i)
 		}
 		<- time.After(10 * time.Millisecond)
 	}
